@@ -64,6 +64,17 @@ public class StorageEngine : IStorageEngine
 
     import Path = ocean.io.Path;
 
+    import dlsnode.storage.trie.fs.FileSystemCache;
+
+
+    /***************************************************************************
+
+        Cache of the filesystem with the root in this channel's directory.
+
+    ***************************************************************************/
+
+    private static FileSystemCache[mstring] file_system;
+
 
     /***************************************************************************
 
@@ -201,12 +212,23 @@ public class StorageEngine : IStorageEngine
             // files it had open for writing must be reset to write to the new
             // channel's directory.
             // (Note that all files are closed upon calling commitAndClose().)
+            bool add_file_to_cache;
             if ( !recently_used || !file.isOpen() )
             {
                 file.setDir(this.outer.id, this.outer.channel_dir);
+                // Since the bucket path will be rendered
+                // only after Put, we need to postpone adding
+                // this file to cache
+                add_file_to_cache = true;
             }
 
             file.put(key, value, record_buffer, suspendable_request_handler);
+            if (add_file_to_cache)
+            {
+                auto fs_cache = this.outer.file_system[this.outer.id];
+                fs_cache.addNewFile(file.bucket_path());
+            }
+
         }
 
 
@@ -318,6 +340,33 @@ public class StorageEngine : IStorageEngine
 
         this.channel_dir.concat(this.global_data_dir, "/", super.id);
         this.createChannelDir();
+
+        auto fs = this.id in this.file_system;
+        if (fs is null)
+        {
+            auto new_fs = new FileSystemCache(this.global_data_dir ~ "/" ~ this.id);
+            this.file_system[this.id] = new_fs;
+        }
+    }
+
+
+    /***************************************************************************
+
+        Gets the file system cache with the root in this directory.
+
+        Returns:
+            returns the file system cache for this channel
+
+    ***************************************************************************/
+
+    FileSystemCache getFileSystem ()
+    in
+    {
+        assert(this.file_system[this.id]);
+    }
+    body
+    {
+        return this.file_system[this.id];
     }
 
 
@@ -432,6 +481,10 @@ public class StorageEngine : IStorageEngine
         this.commitAndClose();
         FileSystemLayout.removeFiles(this.channel_dir);
         this.removeChannelDir();
+
+        // TODO: clear allocated memory
+        auto new_fs = new FileSystemCache(this.global_data_dir ~ "/" ~ this.id);
+        this.file_system[this.id] = new_fs;
 
         return this;
     }
