@@ -41,6 +41,8 @@ import dlsnode.util.aio.AsyncIO;
 import dlsnode.util.aio.SuspendableRequestHandler;
 import core.stdc.time;
 
+import ocean.text.convert.Formatter;
+
 /*******************************************************************************
 
     DLS storage engine iterator
@@ -52,11 +54,15 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
     import dlsnode.storage.FileSystemLayout : FileSystemLayout;
     import dlsnode.storage.BucketFile;
     import dlsnode.storage.Record;
+    import dlsnode.storage.trie.fs.FileSystemCache;
 
     import ocean.core.Buffer;
     import ocean.io.device.File;
 
     import Hash = swarm.util.Hash;
+
+    import dlsnode.storage.trie.FileSystemLayout;
+    import ocean.core.array.Mutation: copy;
 
 
     /***************************************************************************
@@ -88,6 +94,14 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
     ***************************************************************************/
 
     private bool aborted;
+
+    /***************************************************************************
+
+        FileSystemLayout range. Iterates over the files following a range.
+
+    ***************************************************************************/
+
+    private LegacyFileSystemRange fs_range;
 
 
     /***************************************************************************
@@ -176,6 +190,15 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
 
     private hash_t current_bucket_start;
 
+    /***************************************************************************
+
+       In case we need to restart the iteration, the last
+       key we've iterated over.
+
+    ***************************************************************************/
+
+    private hash_t last_read_key;
+
 
     /***************************************************************************
 
@@ -195,6 +218,14 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
 
     /***************************************************************************
 
+        Buffers needed for the fs iteration.
+
+    ***************************************************************************/
+
+    private FileSystemBuffers buffers;
+
+    /***************************************************************************
+
         Constructor.
 
         Params:
@@ -211,6 +242,7 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
         this.file_buffer.length(file_buffer_size);
 
         this.file = new BucketFile(async_io);
+        this.buffers = buffers;
     }
 
 
@@ -351,6 +383,7 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
         }
 
         bool end_of_bucket, end_of_channel;
+        hash_t last_sessions_key;
 
         // In case cursor is positioned at the end of the bucket,
         // there could be no more records in it (this.file.getNextRecord
@@ -377,28 +410,56 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
 
             if ( end_of_bucket )
             {
-                this.file.close(suspendable_request_handler);
+                if (this.file.is_open())
+                    this.file.close(suspendable_request_handler);
 
                 hash_t next_bucket_start;
-                end_of_channel = FileSystemLayout.getNextBucket(
-                    this.storage.working_dir, this.bucket_path,
-                    next_bucket_start,
-                    this.current_bucket_start, this.max_hash);
+                this.fs_range.popFront();
 
+                if (!this.fs_range.isValid())
+                {
+                    // Mark the point from which we need to continue
+                    last_sessions_key = this.last_read_key;
+
+                    // The range got invalidated by the file system changes,
+                    // we need to restart the iteration from the
+                    // last visited hash
+                    this.fs_range = traverseLegacy(
+                            this.storage.getFileSystem(),
+                            &this.buffers,
+                            this.last_read_key + 0x1000 - 1, this.max_hash);
+                }
+
+                end_of_channel = this.fs_range.empty;
                 if ( !end_of_channel )
                 {
-                    this.current_bucket_start = next_bucket_start;
-                    this.file.open(this.bucket_path, suspendable_request_handler,
+                    this.bucket_path.length = 0;
+                    enableStomping(this.bucket_path);
+                    sformat(this.bucket_path,
+                            "{}/{}", this.storage.working_dir,
+                            this.fs_range.front);
+
+                    this.current_bucket_start = get_start_file_hash(this.fs_range.front);
+
+                    if (!this.file.open(this.bucket_path, suspendable_request_handler,
                             this.file_buffer[],
-                            File.ReadExisting);
+                            File.ReadExisting))
+                    {
+                        // remove this file from cache on the failure
+                        this.storage.getFileSystem().deleteFile(this.bucket_path);
+                        continue;
+                    }
                 }
+
             }
             else
             {
                 this.read_header = true;
+                this.last_read_key = this.current_header.key;
             }
         }
-        while ( end_of_bucket && !end_of_channel );
+        while ( end_of_bucket && !end_of_channel &&
+              ( last_sessions_key == 0 || last_sessions_key >= this.current_header.key));
 
         if ( end_of_channel )
         {
@@ -455,31 +516,40 @@ public class StorageEngineStepIterator: IStorageEngineStepIterator
     {
         // Get the name of the first bucket file to scan. no_buckets is
         // set to true if no buckets exist in the specified range.
-        bool no_buckets;
-        if ( this.min_hash == hash_t.min && this.max_hash == hash_t.max )
+        do
         {
-            no_buckets = FileSystemLayout.getFirstBucket(this.storage.working_dir,
-                this.bucket_path, this.current_bucket_start);
-        }
-        else
-        {
-            no_buckets = FileSystemLayout.getFirstBucketInRange(
-                this.storage.working_dir, this.bucket_path,
-                this.current_bucket_start, this.min_hash, this.max_hash);
-        }
+            this.buffers.reset();
+            this.fs_range = traverseLegacy(this.storage.getFileSystem(),
+                    &this.buffers,
+                    this.min_hash, this.max_hash);
 
-        // Clear the iterator's cursor
-        this.resetCursorState();
+            // Clear the iterator's cursor
+            this.resetCursorState();
 
-        if (no_buckets)
-        {
-            // Nothing to do, no buckets.
-            return;
+            if (this.fs_range.empty)
+            {
+                // Nothing to do, no buckets.
+                return;
+            }
+
+            this.bucket_path.length = 0;
+            enableStomping(this.bucket_path);
+            sformat(this.bucket_path,
+                    "{}/{}", this.storage.working_dir,
+                    this.fs_range.front);
+            this.current_bucket_start = get_start_file_hash(this.fs_range.front);
+
+            // Open the bucket and position the cursor to first record
+            if (!this.file.open(this.bucket_path,
+                    suspendable_request_handler, this.file_buffer[], File.ReadExisting))
+            {
+                // remove this file from cache on the failure
+                this.storage.getFileSystem().deleteFile(this.bucket_path);
+                continue;
+            }
         }
+        while (!this.file.is_open());
 
-        // Open the bucket and position the cursor to first record
-        this.file.open(this.bucket_path,
-                suspendable_request_handler, this.file_buffer[], File.ReadExisting);
         this.next(suspendable_request_handler);
     }
 
