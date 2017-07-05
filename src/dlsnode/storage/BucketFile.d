@@ -311,7 +311,7 @@ public class BucketFile: OutputStream
         {
             this.writeBucketHeader();
         }
-        else
+        else if (this.file_length_ >= BucketHeaderSize)
         {
             // in case we're openning already existing file,
             // just read the existing header (if any).
