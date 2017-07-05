@@ -341,7 +341,10 @@ public class BufferedBucketOutput
                 the current fiber on while doing blocking IO
 
      **************************************************************************/
-
+    public mstring bucket_path ()
+    {
+        return this.bucket_path_str;
+    }
     private void openFile ( hash_t key,
             SuspendableRequestHandler suspendable_request_handler )
     {
