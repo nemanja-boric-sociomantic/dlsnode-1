@@ -22,6 +22,20 @@ import dlsnode.util.aio.AsyncIO;
 import dlsnode.util.aio.SuspendableRequestHandler;
 
 import ocean.util.serialize.contiguous.package_;
+import ocean.util.log.Log;
+
+/*******************************************************************************
+
+    Static module logger
+
+*******************************************************************************/
+
+private Logger logger;
+
+static this ( )
+{
+    logger = Log.lookup("dlsnode.storage.BucketFile");
+}
 
 /*******************************************************************************
 
@@ -285,9 +299,12 @@ public class BucketFile: OutputStream
             file_buffer = buffer used for buffered input
             style = style in which file will be open for
 
+        Returns:
+            true on the success, false on the failure
+
     **************************************************************************/
 
-    public void open (cstring path,
+    public bool open (cstring path,
             SuspendableRequestHandler suspendable_request_handler,
             void[] file_buffer,
             File.Style style = File.ReadExisting)
@@ -298,28 +315,51 @@ public class BucketFile: OutputStream
     }
     body
     {
-        this.buffered_input.reset(file_buffer);
-        this.file.open(path, style);
-        this.file_length_ = this.file.length;
-        this.file_pos_ = this.file.position;
-        this.is_open_ = true;
+        try
+        {
+            this.buffered_input.reset(file_buffer);
+            this.file.open(path, style);
 
-        // In case we opened this file for writting,
-        // but the position is at 0 (empty file), we need to
-        // write the magic header.
-        if (style == File.ReadWriteAppending && this.file_length_ == 0)
-        {
-            this.writeBucketHeader();
+            this.file_length_ = this.file.length;
+            this.file_pos_ = this.file.position;
+            this.is_open_ = true;
+
+            // In case we opened this file for writting,
+            // but the position is at 0 (empty file), we need to
+            // write the magic header.
+            if (style == File.ReadWriteAppending && this.file_length_ == 0)
+            {
+                this.writeBucketHeader();
+            }
+            else if (this.file_length_ >= BucketHeaderSize)
+            {
+                // in case we're openning already existing file,
+                // just read the existing header (if any).
+                // NOTE: there's no need to reposition cursor. The reason is that
+                // we have opened underlying file with O_APPEND and writes will
+                // always be appended to the end of the file
+                this.readBucketHeader(suspendable_request_handler);
+            }
+
+            return true;
         }
-        else if (this.file_length_ >= BucketHeaderSize)
+        catch (File.IOException e)
         {
-            // in case we're openning already existing file,
-            // just read the existing header (if any).
-            // NOTE: there's no need to reposition cursor. The reason is that
-            // we have opened underlying file with O_APPEND and writes will
-            // always be appended to the end of the file
-            this.readBucketHeader(suspendable_request_handler);
+            // It's expected to experience ENOENT errors in case cache doesn't
+            // represent file system exactly
+            // so don't log them
+            if (e.errorNumber() != ENOENT)
+            {
+                .logger.warn("Error opening file: {}", getMsg(e));
+            }
+            return false;
         }
+        catch (Exception e)
+        {
+            throw e;
+        }
+
+        assert(false);
     }
 
     /**************************************************************************
