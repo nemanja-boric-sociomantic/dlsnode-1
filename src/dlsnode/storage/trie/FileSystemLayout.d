@@ -57,6 +57,27 @@ public hash_t get_start_file_hash (cstring rel_path)
     return Integer.parse(hash, 16) * pow(16UL, 16 - hash.length);
 }
 
+/*******************************************************************************
+
+    Returns:
+        true if the file name is a valid file name.
+
+*******************************************************************************/
+
+private bool valid_filename (cstring filepath)
+{
+    foreach (c; basename(filepath))
+    {
+        if (!((c >= '0' && c <= '9' ||
+            c >= 'a' && c <= 'f' ||
+            c >= 'A' && c <= 'F')))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 /// Iterates over the tree and prints files that are containing
 /// data that we're looking forward to and call dg with the
 /// files
@@ -152,6 +173,11 @@ struct LegacyFileSystemRange
 
             auto abs_path = range.front;
             auto rel_path = range.relativePath();
+
+            if (!valid_filename(rel_path))
+            {
+                continue;
+            }
 
             file_start_hash = get_start_file_hash(rel_path);
 
