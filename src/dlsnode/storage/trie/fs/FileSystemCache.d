@@ -15,6 +15,7 @@ import ocean.core.array.Mutation;
 import ocean.core.array.Search;
 import ocean.core.Enforce;
 import ocean.core.SmartUnion;
+import ocean.core.Verify;
 import ocean.io.FilePath_tango;
 import ocean.io.model.IFile;
 import ocean.transition;
@@ -64,7 +65,7 @@ struct DirectoryName
     private size_t name_length;
     private char[50] name_buf;
 
-    public cstring name (cstring name)
+    public void name (cstring name)
     {
         enforce (name.length <= name_buf.length);
 
@@ -74,7 +75,7 @@ struct DirectoryName
 
     public cstring name()
     {
-        return this.name_buf[this.name_length];
+        return this.name_buf[0..this.name_length];
     }
 
     mixin (genOpCmp("
@@ -126,7 +127,7 @@ public struct DirectoryEntry
 
     ***************************************************************************/
 
-    private DirectoryListing children;
+    private DirectoryListing* children;
 
     /***************************************************************************
 
@@ -137,20 +138,23 @@ public struct DirectoryEntry
 
     ***************************************************************************/
 
-    public void addSubdirectory (cstring name)
+    public DirectoryEntry* addSubdirectory (cstring name)
     {
         assert (is_directory(*this));
 
         DirectoryEntry dir;
         dir.parent = this;
         dir.type = DirectoryEntry.Type.Directory;
+        dir.children = new typeof(*dir.children);
         dir.children.entries = makeBTreeMap!(DirectoryName, DirectoryEntry,
                 DirectoryListing.ChildrenTreeDegree);
+        dir.name = name;
 
         DirectoryName directory_name;
         directory_name.name = name;
 
-        verify(this.children.entries.insert(name, dir));
+        verify(this.children.entries.insert(directory_name, dir));
+        return this.children.entries.get(directory_name);
     }
 
     /***************************************************************************
@@ -172,6 +176,7 @@ public struct DirectoryEntry
         DirectoryEntry file;
         file.parent = this;
         file.type = DirectoryEntry.Type.File;
+        file.name = name;
 
         DirectoryName filename;
         filename.name = name;
@@ -192,41 +197,11 @@ public struct DirectoryEntry
     {
         assert (is_directory(*this));
 
-        auto file = allocate!(DirectoryEntry)();
-        file.parent = this;
-        file.name = name;
-        file.type = DirectoryEntry.Type.File;
+        DirectoryName dir_name;
+        dir_name.name = name;
 
         // Ignoring return value since further removals are noops
-        cast(void)removeElement(this.children.entries, *file);
-    }
-
-    /***************************************************************************
-
-        Returns:
-            the name of this directory entry.
-
-    ***************************************************************************/
-
-    public cstring name() /* d1to2fix_inject: const */
-    {
-        return this.name_[0..name_length];
-    }
-
-    /***************************************************************************
-
-        Sets the name of this directory entry.
-
-        Params:
-            new directory entry's name
-
-    ***************************************************************************/
-
-    public void name(in cstring name)
-    {
-        enforce(name.length < this.maximum_file_name);
-        this.name_length = cast(ubyte)name.length;
-        this.name_[0..this.name_length] = name[];
+        this.children.entries.remove(dir_name);
     }
 
     /***************************************************************************
@@ -244,17 +219,21 @@ public struct DirectoryEntry
     /// ditto
     private Type type;
 
-    /// Compares names of two directory entries
-    mixin(genOpEquals(`{
-            return rhs.name == this.name;
-        }`));
+    private size_t name_length;
+    private char[50] name_buf;
 
-    /// ditto
-    mixin(genOpCmp(`{
-            if (this.name >= rhs.name)
-                return this.name > rhs.name;
-            return -1;
-        }`));
+    public void name (cstring name)
+    {
+        enforce (name.length <= name_buf.length);
+
+        this.name_length = name.length;
+        this.name_buf[0..this.name_length] = name[];
+    }
+
+    public cstring name()
+    {
+        return this.name_buf[0..this.name_length];
+    }
 }
 
 
@@ -363,8 +342,9 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
 
         root.type = DirectoryEntry.Type.Directory;
         // no name for the root directory
-        root.name = "";
-        root.children = allocate!(typeof(*root.children))();
+        root.children = new typeof(*root.children);
+        root.children.entries = makeBTreeMap!(DirectoryName, DirectoryEntry,
+                DirectoryListing.ChildrenTreeDegree);
 
         this.path_buffer.init();
 
@@ -397,7 +377,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
             {
                 // allocate new child folder
                 auto dir = root_dir.addSubdirectory(item.name);
-                build(current_path, dir.name, *dir);
+                build(current_path, item.name, *dir);
             }
             else
             {
@@ -462,7 +442,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
 
         ***********************************************************************/
 
-        private DirectoryEntry* current_file;
+        private DirectoryEntry current_file;
 
         /***********************************************************************
 
@@ -522,8 +502,8 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
             this.root = null;
             this.root_path = null;
             item = item.init;
-            current_file = null;
             is_empty = false;
+            this.current_file = DirectoryEntry.init;
         }
 
         /// ditto
@@ -539,8 +519,8 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
             this.root = null;
             this.root_path = null;
             this.item = item.init;
-            this.current_file = null;
             this.is_empty = false;
+            this.current_file = DirectoryEntry.init;
             this.is_valid = true;
         }
 
@@ -611,7 +591,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                 }
                 else
                 {
-                    auto dir_entry = this.item.front;
+                    auto dir_entry = this.item.front.value;
 
                     if (!this.item.isValid())
                     {
@@ -626,7 +606,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                     // iteration here and end with it, but if it's a directory,
                     // we need to descend into it.
 
-                    if (!is_directory(*dir_entry))
+                    if (!is_directory(dir_entry))
                     {
                         this.current_file = dir_entry;
                         return;
@@ -642,7 +622,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                             cast(void[]*)&this.buffers.tree_buffer :
                             getVoidBuffer();
 
-                        this.item = inorder(dir_entry.children.entries, buf);
+                        this.item = byKeyValue(dir_entry.children.entries, buf);
                         continue;
                     }
                 }
@@ -690,10 +670,10 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
             auto buf = this.buffers !is null?
                 cast(void[]*)&this.buffers.tree_buffer :
                 getVoidBuffer();
-            auto range = inorder(this.root.children.entries, buf);
+            auto range = byKeyValue(this.root.children.entries, buf);
 
             this.item = range;
-            if (this.item.front is null)
+            if (this.item.empty)
             {
                 this.is_empty = true;
                 return;
@@ -866,9 +846,9 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                 }
                 else
                 {
-                    DirectoryEntry search_for;
+                    DirectoryName search_for;
                     search_for.name = component;
-                    auto dir = search(owner_dir.children.entries, search_for);
+                    auto dir = owner_dir.children.entries.get(search_for);
 
                     if (dir && is_directory(*dir))
                     {
@@ -913,9 +893,9 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                 }
                 else
                 {
-                    DirectoryEntry search_for;
+                    DirectoryName search_for;
                     search_for.name = component;
-                    auto dir = search(owner_dir.children.entries, search_for);
+                    auto dir = owner_dir.children.entries.get(search_for);
 
                     if (dir && is_directory(*dir))
                     {
