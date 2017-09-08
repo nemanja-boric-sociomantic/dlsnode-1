@@ -65,7 +65,7 @@ struct DirectoryName
     private size_t name_length;
     private char[50] name_buf;
 
-    public void name (cstring name)
+    public void name (in cstring name)
     {
         enforce (name.length <= name_buf.length);
 
@@ -73,7 +73,7 @@ struct DirectoryName
         this.name_buf[0..this.name_length] = name[];
     }
 
-    public cstring name()
+    public cstring name() /* d1to2fix_inject: const */
     {
         return this.name_buf[0..this.name_length];
     }
@@ -103,6 +103,14 @@ public struct DirectoryListing
 
     /// Directory items
     BTreeMap!(DirectoryName, DirectoryEntry, ChildrenTreeDegree) entries;
+
+    static DirectoryListing* createListing ()
+    {
+        auto listing = cast(DirectoryListing*)((new ubyte[DirectoryListing.sizeof]).ptr);
+        *listing = DirectoryListing(makeBTreeMap!(DirectoryName,
+                    DirectoryEntry, ChildrenTreeDegree));
+        return listing;
+    }
 }
 
 /*******************************************************************************
@@ -145,7 +153,7 @@ public struct DirectoryEntry
         DirectoryEntry dir;
         dir.parent = this;
         dir.type = DirectoryEntry.Type.Directory;
-        dir.children = new typeof(*dir.children);
+        dir.children = DirectoryListing.createListing();
         dir.children.entries = makeBTreeMap!(DirectoryName, DirectoryEntry,
                 DirectoryListing.ChildrenTreeDegree);
         dir.name = name;
@@ -222,7 +230,7 @@ public struct DirectoryEntry
     private size_t name_length;
     private char[50] name_buf;
 
-    public void name (cstring name)
+    public void name (in cstring name)
     {
         enforce (name.length <= name_buf.length);
 
@@ -230,7 +238,7 @@ public struct DirectoryEntry
         this.name_buf[0..this.name_length] = name[];
     }
 
-    public cstring name()
+    public cstring name() /* d1to2fix_inject: const */
     {
         return this.name_buf[0..this.name_length];
     }
@@ -342,7 +350,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
 
         root.type = DirectoryEntry.Type.Directory;
         // no name for the root directory
-        root.children = new typeof(*root.children);
+        root.children = DirectoryListing.createListing();
         root.children.entries = makeBTreeMap!(DirectoryName, DirectoryEntry,
                 DirectoryListing.ChildrenTreeDegree);
 
