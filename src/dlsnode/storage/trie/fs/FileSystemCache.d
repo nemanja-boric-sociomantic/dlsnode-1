@@ -19,11 +19,10 @@ import ocean.io.FilePath_tango;
 import ocean.io.model.IFile;
 import ocean.transition;
 import ocean.text.convert.Formatter;
+import ocean.util.container.btree.BTreeMap;
+import ocean.util.container.btree.BTreeMapRange;
 
-import dlsnode.storage.trie.util.Memory;
 import dlsnode.storage.trie.util.PathUtils;
-
-import dlsnode.storage.trie.util.containers.BTree;
 
 version(UnitTest)
 {
@@ -56,6 +55,39 @@ struct FileSystemBuffers
 
 /*******************************************************************************
 
+    DirectoryEntry name.
+
+*******************************************************************************/
+
+struct DirectoryName
+{
+    private size_t name_length;
+    private char[50] name_buf;
+
+    public cstring name (cstring name)
+    {
+        enforce (name.length <= name_buf.length);
+
+        this.name_length = name.length;
+        this.name_buf[0..this.name_length] = name[];
+    }
+
+    public cstring name()
+    {
+        return this.name_buf[this.name_length];
+    }
+
+    mixin (genOpCmp("
+            {
+                if (this.name >= rhs.name)
+                    return this.name > rhs.name;
+                return -1;
+            }
+            "));
+}
+
+/*******************************************************************************
+
     Workaround for not being able to put `BTree!(DirectoryEntry, Degree, Allocator)*`
     directly into struct DirectoryEntry, because of the forward reference errors
     Ideally, these all should be contained inside `struct File`'s definition.
@@ -69,7 +101,7 @@ public struct DirectoryListing
     const ChildrenTreeDegree = 51;
 
     /// Directory items
-    BTree!(DirectoryEntry, ChildrenTreeDegree, MallocAllocator) entries;
+    BTreeMap!(DirectoryName, DirectoryEntry, ChildrenTreeDegree) entries;
 }
 
 /*******************************************************************************
@@ -94,33 +126,7 @@ public struct DirectoryEntry
 
     ***************************************************************************/
 
-    private DirectoryListing* children;
-
-    /***************************************************************************
-
-        Maximum length of the directory entry.
-
-    ***************************************************************************/
-
-    const size_t maximum_file_name = 51;
-
-    /***************************************************************************
-
-        Name of the directory entry buffer.
-
-    ***************************************************************************/
-
-    char[maximum_file_name] name_;
-
-    /***************************************************************************
-
-        Length of the directory entry name.
-
-    ***************************************************************************/
-
-    private ubyte name_length;
-
-    static assert(name_length.max >= maximum_file_name) ;
+    private DirectoryListing children;
 
     /***************************************************************************
 
@@ -129,24 +135,22 @@ public struct DirectoryEntry
         Params:
             name = name of the new subdirectory.
 
-        Returns:
-            pointer to the newly created directory
-
     ***************************************************************************/
 
-    public DirectoryEntry* addSubdirectory (cstring name)
+    public void addSubdirectory (cstring name)
     {
         assert (is_directory(*this));
 
-        auto dir = allocate!(DirectoryEntry)();
-        dir.name = malloc_dup(name);
+        DirectoryEntry dir;
         dir.parent = this;
         dir.type = DirectoryEntry.Type.Directory;
-        dir.children = allocate!(typeof(*dir.children))();
+        dir.children.entries = makeBTreeMap!(DirectoryName, DirectoryEntry,
+                DirectoryListing.ChildrenTreeDegree);
 
-        insertElement(this.children.entries, *dir);
+        DirectoryName directory_name;
+        directory_name.name = name;
 
-        return dir;
+        verify(this.children.entries.insert(name, dir));
     }
 
     /***************************************************************************
@@ -161,18 +165,18 @@ public struct DirectoryEntry
 
     ***************************************************************************/
 
-    public DirectoryEntry* addFile (cstring name)
+    public void addFile (cstring name)
     {
         assert (is_directory(*this));
 
-        auto file = allocate!(DirectoryEntry)();
+        DirectoryEntry file;
         file.parent = this;
-        file.name = name;
         file.type = DirectoryEntry.Type.File;
 
-        insertElement(this.children.entries, *file);
+        DirectoryName filename;
+        filename.name = name;
 
-        return file;
+        verify(this.children.entries.insert(filename, file));
     }
 
     /***************************************************************************
@@ -434,7 +438,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
 
         ***********************************************************************/
 
-        private alias BTreeRange!(typeof(DirectoryListing.entries)) SubdirectoryRange;
+        private alias BTreeMapRange!(typeof(DirectoryListing.entries)) SubdirectoryRange;
 
         /***********************************************************************
 

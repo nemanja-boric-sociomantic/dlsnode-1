@@ -17,7 +17,6 @@ import ocean.util.log.Log;
 import Integer = ocean.text.convert.Integer_tango;
 
 import dlsnode.storage.trie.util.PathUtils;
-import dlsnode.storage.trie.util.Memory;
 import dlsnode.storage.trie.fs.FileSystemCache;
 
 /*******************************************************************************
