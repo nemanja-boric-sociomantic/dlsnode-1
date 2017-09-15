@@ -161,8 +161,10 @@ public struct DirectoryEntry
         DirectoryName directory_name;
         directory_name.name = name;
 
-        verify(this.children.entries.insert(directory_name, dir));
-        return this.children.entries.get(directory_name);
+        bool added;
+        auto entry = this.children.entries.insert(directory_name, dir, added);
+        verify(added);
+        return entry;
     }
 
     /***************************************************************************
@@ -856,7 +858,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                 {
                     DirectoryName search_for;
                     search_for.name = component;
-                    auto dir = owner_dir.children.entries.get(search_for);
+                    auto dir = search_for in owner_dir.children.entries;
 
                     if (dir && is_directory(*dir))
                     {
@@ -903,7 +905,7 @@ public class FileSystemCacheImpl(alias DirectoryIterator = FilePathIterator)
                 {
                     DirectoryName search_for;
                     search_for.name = component;
-                    auto dir = owner_dir.children.entries.get(search_for);
+                    auto dir = search_for in owner_dir.children.entries;
 
                     if (dir && is_directory(*dir))
                     {
